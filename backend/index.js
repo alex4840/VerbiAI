@@ -6,7 +6,8 @@ import ImageKit from "imagekit";
 import mongoose from "mongoose";
 import Chat from "./models/chat.js";
 import UserChats from "./models/userChats.js";
-import { ClerkExpressRequireAuth } from "@clerk/clerk-sdk-node";
+import { ClerkExpressRequireAuth ,ClerkExpressWithAuth} from "@clerk/clerk-sdk-node";
+
 import dotenv from "dotenv";
 
 // Load environment variables
@@ -27,14 +28,12 @@ app.use(
 
 app.use(express.json());
 
-// MongoDB connection function
 const connect = async () => {
   try {
     await mongoose.connect(process.env.MONGO);
     console.log("Connected to MongoDB");
   } catch (err) {
-    console.log("Failed to connect to MongoDB:", err);
-    process.exit(1); // Exit if connection fails
+    console.log(err);
   }
 };
 
@@ -44,7 +43,6 @@ const imagekit = new ImageKit({
   privateKey: process.env.IMAGE_KIT_PRIVATE_KEY,
 });
 
-// API routes
 app.get("/api/upload", (req, res) => {
   const result = imagekit.getAuthenticationParameters();
   res.send(result);
@@ -55,6 +53,7 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
   const { text } = req.body;
 
   try {
+    // CREATE A NEW CHAT
     const newChat = new Chat({
       userId: userId,
       history: [{ role: "user", parts: [{ text }] }],
@@ -62,8 +61,10 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
 
     const savedChat = await newChat.save();
 
+    // CHECK IF THE USERCHATS EXISTS
     const userChats = await UserChats.find({ userId: userId });
 
+    // IF DOESN'T EXIST CREATE A NEW ONE AND ADD THE CHAT IN THE CHATS ARRAY
     if (!userChats.length) {
       const newUserChats = new UserChats({
         userId: userId,
@@ -77,6 +78,7 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
 
       await newUserChats.save();
     } else {
+      // IF EXISTS, PUSH THE CHAT TO THE EXISTING ARRAY
       await UserChats.updateOne(
         { userId: userId },
         {
@@ -97,37 +99,75 @@ app.post("/api/chats", ClerkExpressRequireAuth(), async (req, res) => {
   }
 });
 
-// Additional routes...
+app.get("/api/userchats", ClerkExpressRequireAuth(), async (req, res) => {
+  const userId = req.auth.userId;
 
-// Serve static files in production
-app.use(express.static(path.join(__dirname, 'client/dist')));
+  try {
+    const userChats = await UserChats.find({ userId });
 
-
-
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "../client/dist/index.html"));
+    res.status(200).send(userChats[0].chats);
+  } catch (err) {
+    console.log(err);
+    res.status(500).send("Error fetching userchats!");
+  }
 });
 
+app.get("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
+  const userId = req.auth.userId;
 
-// Error handling middleware
+  try {
+    const chat = await Chat.findOne({ _id: req.params.id, userId });
+
+    res.status(200).send(chat);
+  } catch (err) {
+    console.log(err);
+    res.status(500).send("Error fetching chat!");
+  }
+});
+
+app.put("/api/chats/:id", ClerkExpressRequireAuth(), async (req, res) => {
+  const userId = req.auth.userId;
+
+  const { question, answer, img } = req.body;
+
+  const newItems = [
+    ...(question
+      ? [{ role: "user", parts: [{ text: question }], ...(img && { img }) }]
+      : []),
+    { role: "model", parts: [{ text: answer }] },
+  ];
+
+  try {
+    const updatedChat = await Chat.updateOne(
+      { _id: req.params.id, userId },
+      {
+        $push: {
+          history: {
+            $each: newItems,
+          },
+        },
+      }
+    );
+    res.status(200).send(updatedChat);
+  } catch (err) {
+    console.log(err);
+    res.status(500).send("Error adding conversation!");
+  }
+});
+
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  if (err.name === "UnauthorizedError") {
-    return res.status(401).send("Unauthenticated!");
-  }
-  res.status(500).send("Something went wrong!");
+  res.status(401).send("Unauthenticated!");
 });
 
-// Start the server and connect to the database
-const startServer = async () => {
-  try {
-    await connect();
-    app.listen(port, () => {
-      console.log(`Server running on port ${port}`);
-    });
-  } catch (err) {
-    console.error("Failed to start server:", err);
-  }
-};
+// PRODUCTION
+app.use(express.static(path.join(__dirname, "../client/dist")));// 
 
-startServer();
+app.get("*", (req, res) => {
+res.sendFile(path.join(__dirname, "../client/dist", "index.html"));
+});
+
+app.listen(port, () => {
+  connect();
+  console.log("Server running on 3000");
+});
